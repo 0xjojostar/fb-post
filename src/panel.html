@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>FB Group Archive</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header>
+    <h1>FB Group Archive</h1>
+    <p id="current">Looking at this tab…</p>
+    <p class="meta">Use the group’s New posts order. From and To include those dates.</p>
+  </header>
+  <section>
+    <label for="since">From <input id="since" type="date"></label>
+    <label for="until">To <input id="until" type="date"></label>
+    <div class="row">
+      <button id="download" type="button">Download this group</button>
+      <button id="update" type="button">Update</button>
+      <button id="pause" type="button">Pause</button>
+      <button id="resume" type="button">Resume</button>
+    </div>
+    <p id="progress" role="status"></p>
+  </section>
+  <section>
+    <h2>Library</h2>
+    <ul id="groups"></ul>
+  </section>
+  <section id="detail" hidden>
+    <h2 id="detail-title"></h2>
+    <label for="search">Search <input id="search" type="search" placeholder="Posts and comments"></label>
+    <div id="insights"></div>
+    <div class="row" id="exports">
+      <button type="button" data-format="csv-posts">Posts CSV</button>
+      <button type="button" data-format="csv-comments">Comments CSV</button>
+      <button type="button" data-format="json">JSON</button>
+      <button type="button" data-format="jsonl">JSONL</button>
+      <button type="button" data-format="md">Markdown</button>
+      <button type="button" data-format="html">HTML</button>
+    </div>
+    <ul id="results"></ul>
+    <article id="thread" hidden></article>
+  </section>
+  <p class="meta">Saved only in this browser. Reads a group you can already open.</p>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

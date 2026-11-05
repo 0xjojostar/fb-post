@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "FB Group Archive",
+  "version": "0.1.0",
+  "description": "Save posts and comments from a Facebook group you have open. Data stays in this browser.",
+  "minimum_chrome_version": "114",
+  "permissions": ["storage", "sidePanel", "tabs", "scripting"],
+  "host_permissions": [
+    "https://www.facebook.com/*",
+    "https://web.facebook.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "FB Group Archive"
+  },
+  "side_panel": {
+    "default_path": "src/panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.facebook.com/*",
+        "https://web.facebook.com/*"
+      ],
+      "js": ["src/parse.js", "src/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
