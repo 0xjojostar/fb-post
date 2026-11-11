@@ -1,5 +1,4 @@
 import {
-  deletePost,
   getGroup,
   getJob,
   getPost,
@@ -46,6 +45,8 @@ async function handle(msg, sender) {
       return feedDone(msg.groupId);
     case "THREAD_DONE":
       return threadDone(msg);
+    case "THREAD_SKIP":
+      return threadSkip(msg.groupId, msg.postId);
     case "THREADS_DONE":
       return threadsDone(msg.groupId);
     case "JOB_ERROR":
@@ -200,14 +201,10 @@ async function savePost(groupId, post) {
   if (job.mode === "update" && (job.knownIds || []).includes(post.id)) {
     return { ok: true, stopFeed: true };
   }
-  const existing = await getPost(post.id);
-  const merged = mergePost(existing, post, "feed");
-  await putPost(merged);
   if (!job.seenIds.includes(post.id)) job.seenIds.push(post.id);
   if (!job.pending.some((item) => item.id === post.id)) job.pending.push({ id: post.id, url: post.url });
   job.updatedAt = new Date().toISOString();
   await putJob(job);
-  await touchGroup(groupId);
   return { ok: true, stopFeed: false };
 }
 
@@ -226,48 +223,43 @@ async function feedDone(groupId) {
 async function threadDone(msg) {
   const job = await getJob(msg.groupId);
   if (!job) return { ok: false, error: "No download is running." };
-  if (msg.newer) {
-    await deletePost(msg.postId);
-    job.pending = (job.pending || []).filter((item) => item.id !== msg.postId);
-    job.updatedAt = new Date().toISOString();
-    if (!job.pending.length) {
-      job.phase = "done";
-      job.status = "done";
-    }
-    await putJob(job);
-    if (job.status === "done") await updateGroupStatus(msg.groupId, "done");
-    if (job.paused || job.status !== "running") return { ok: true, nextUrl: null };
-    return { ok: true, nextUrl: job.pending[0]?.url || null };
+  const comments = Array.isArray(msg.comments) ? msg.comments : null;
+  if (msg.complete !== true || !msg.post || msg.post.id !== msg.postId || !comments) {
+    await jobError(msg.groupId, `Post ${msg.postId} returned an incomplete or mismatched capture. The saved thread was not changed.`);
+    return { ok: false, error: "Incomplete thread capture." };
   }
-  if (msg.older) {
-    await deletePost(msg.postId);
-    job.pending = [];
-    job.phase = "done";
-    job.status = "done";
-    job.updatedAt = new Date().toISOString();
-    await putJob(job);
-    await updateGroupStatus(msg.groupId, "done");
-    return { ok: true, nextUrl: null };
+  if ((msg.post.commentCount || 0) > 0 && comments.length === 0) {
+    await jobError(msg.groupId, `Post ${msg.postId} reports comments, but none were captured. The saved thread was not changed.`);
+    return { ok: false, error: "Missing comments." };
   }
-  if (msg.post) {
-    const existing = await getPost(msg.post.id);
-    const comments = Array.isArray(msg.comments) ? msg.comments : [];
-    const post = mergePost(existing, msg.post, "threads");
-    if (comments.length && (post.commentCount == null || post.commentCount < comments.length)) {
-      post.commentCount = comments.length;
-    }
-    await putPost(post);
+  const existing = await getPost(msg.postId);
+  const post = { ...mergePost(existing, msg.post), groupId: msg.groupId, threadCaptureVersion: 2 };
+  if (comments.length && (post.commentCount == null || post.commentCount < comments.length)) {
+    post.commentCount = comments.length;
+  }
+  await putPost(post);
+  if (comments.length) {
     await replaceComments(post.id, comments.map((comment) => ({ ...comment, postId: post.id, groupId: msg.groupId })));
   }
-  job.pending = (job.pending || []).filter((item) => item.id !== msg.postId);
+  return finishThread(job, msg.postId);
+}
+
+async function threadSkip(groupId, postId) {
+  const job = await getJob(groupId);
+  if (!job) return { ok: false, error: "No download is running." };
+  return finishThread(job, postId);
+}
+
+async function finishThread(job, postId) {
+  job.pending = (job.pending || []).filter((item) => item.id !== postId);
   job.updatedAt = new Date().toISOString();
   if (!job.pending.length) {
     job.phase = "done";
     job.status = "done";
   }
   await putJob(job);
-  await touchGroup(msg.groupId);
-  if (job.status === "done") await updateGroupStatus(msg.groupId, "done");
+  await touchGroup(job.groupId);
+  if (job.status === "done") await updateGroupStatus(job.groupId, "done");
   if (job.paused || job.status !== "running") return { ok: true, nextUrl: null };
   return { ok: true, nextUrl: job.pending[0]?.url || null };
 }
@@ -295,13 +287,12 @@ async function jobError(groupId, error) {
   return { ok: true };
 }
 
-function mergePost(existing, incoming, phase) {
+function mergePost(existing, incoming) {
   if (!existing) return { ...incoming };
-  const keepFeedText = phase === "feed" && existing.text && existing.text.length > (incoming.text || "").length;
   return {
     ...existing,
     ...incoming,
-    text: keepFeedText ? existing.text : (incoming.text || existing.text || ""),
+    text: incoming.text || existing.text || "",
     sharedText: incoming.sharedText || existing.sharedText || "",
     links: incoming.links?.length ? incoming.links : (existing.links || []),
     imageAlts: incoming.imageAlts?.length ? incoming.imageAlts : (existing.imageAlts || []),

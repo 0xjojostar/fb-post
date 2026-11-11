@@ -95,7 +95,7 @@ function parseAttrs(raw) {
   let match;
   while ((match = re.exec(raw))) {
     if (match[1] === "/") continue;
-    attrs[match[1]] = match[2] ?? match[3] ?? "";
+    attrs[match[1]] = decode(match[2] ?? match[3] ?? "");
   }
   return attrs;
 }

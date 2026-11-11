@@ -6,6 +6,7 @@ const progressEl = document.querySelector("#progress");
 const groupsEl = document.querySelector("#groups");
 const detailEl = document.querySelector("#detail");
 const titleEl = document.querySelector("#detail-title");
+const warningEl = document.querySelector("#verification-warning");
 const searchEl = document.querySelector("#search");
 const insightsEl = document.querySelector("#insights");
 const resultsEl = document.querySelector("#results");
@@ -58,8 +59,11 @@ async function refresh() {
   const groups = await listGroups();
   if (!selectedId && groups[0]) selectedId = groups[0].id;
   const jobs = [];
-  for (const item of groups) jobs.push([item.id, await getJob(item.id), (await listPosts(item.id)).length]);
-  const sig = JSON.stringify(jobs.map(([id, job, count]) => [id, job?.status, job?.phase, job?.seenIds?.length, job?.pending?.length, job?.error, count]));
+  for (const item of groups) {
+    const posts = await listPosts(item.id);
+    jobs.push([item.id, await getJob(item.id), posts.length, posts.some((post) => post.threadCaptureVersion !== 2)]);
+  }
+  const sig = JSON.stringify(jobs.map(([id, job, count, unverified]) => [id, job?.status, job?.phase, job?.seenIds?.length, job?.pending?.length, job?.error, count, unverified]));
   paintProgress(group, jobs);
   if (sig === signature) return;
   signature = sig;
@@ -124,6 +128,7 @@ async function renderDetail() {
   }
   detailEl.hidden = false;
   titleEl.textContent = group.name || group.id;
+  warningEl.hidden = !(await listPosts(selectedId)).some((post) => post.threadCaptureVersion !== 2);
   await renderInsights();
   await renderResults();
 }

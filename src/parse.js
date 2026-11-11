@@ -156,13 +156,18 @@ function localToday() {
 function isExpandLabel(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
   if (!t || t.length > 80) return false;
+  if (isAllCommentsLabel(t)) return false;
   if (/^see more$/i.test(t)) return true;
-  if (/^(view more comments|view previous comments|view more replies|view replies|more comments|more replies)$/i.test(t)) {
-    return true;
-  }
-  if (/^view \d[\d,]* (more )?(comments|replies)$/i.test(t)) return true;
-  if (/^(see )?\d[\d,]* more comments$/i.test(t)) return true;
-  return false;
+  if (/^(?:more (?:comments?|repl(?:y|ies))|(?:view|see) (?:\d[\d,]* )?(?:more |previous )?(?:comments?|repl(?:y|ies))|\d[\d,]* (?:more )?(?:comments?|repl(?:y|ies)))$/i.test(t)) return true;
+  return /(?:留言|評論|评论|回覆|回复)/.test(t) && /(?:查看|檢視|显示|顯示|載入|加载|更多|先前|之前|較早|更早|\d)/.test(t);
+}
+
+function isAllCommentsLabel(text) {
+  return /^(?:all comments|所有留言|所有評論|所有评论)$/i.test(String(text || "").replace(/\s+/g, " ").trim());
+}
+
+function isCommentSortLabel(text) {
+  return /^(?:most relevant|newest|最相關|最相关|最新)$/i.test(String(text || "").replace(/\s+/g, " ").trim());
 }
 
 function isInterstitial(doc) {
@@ -188,7 +193,7 @@ function articleForPost(root, postId) {
   const matches = [...root.querySelectorAll('[role="article"]')].filter((article) => {
     return [...article.querySelectorAll("a[href]")].some((link) => {
       if (link.closest('[role="article"]') !== article) return false;
-      return postIdFromUrl(link.getAttribute("href")) === postId;
+      return isPostPermalink(link.getAttribute("href"), postId);
     });
   });
   return matches.find((article) => !(article.parentElement && article.parentElement.closest('[role="article"]'))) || matches[0] || null;
@@ -222,25 +227,32 @@ function postFromArticle(article, groupId, pageUrl) {
   };
 }
 
-function commentsFromArticle(postEl, postId, groupId) {
-  if (!postEl) return [];
-  const shares = [...postEl.querySelectorAll('[role="article"]')].filter((node) => isShare(node, postId));
-  const nodes = [...postEl.querySelectorAll('[role="article"]')].filter((node) => {
-    return !shares.some((share) => share === node || share.contains(node));
-  });
-  const ids = new Map();
-  nodes.forEach((node, order) => {
-    ids.set(node, explicitCommentId(node) || `${postId}:${order}`);
-  });
-  return nodes.map((node, order) => {
-    const owner = node.parentElement && node.parentElement.closest('[role="article"]');
-    const parentId = owner && owner !== postEl && ids.has(owner) ? ids.get(owner) : null;
-    let depth = 0;
-    let cursor = owner;
-    while (cursor && cursor !== postEl) {
-      if (ids.has(cursor)) depth += 1;
-      cursor = cursor.parentElement && cursor.parentElement.closest('[role="article"]');
+function commentsFromArticle(root, postId, groupId) {
+  if (!root) return [];
+  const seen = new Set();
+  const rows = [];
+  for (const node of root.querySelectorAll('[role="article"]')) {
+    const meta = commentMeta(node, postId);
+    if (!meta || seen.has(meta.id)) continue;
+    seen.add(meta.id);
+    rows.push({ node, ...meta });
+  }
+  const ids = new Map(rows.map((row) => [row.node, row.id]));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const row of rows) {
+    if (row.parentId === undefined) {
+      const owner = row.node.parentElement && row.node.parentElement.closest('[role="article"]');
+      row.parentId = ids.get(owner) || null;
     }
+  }
+  const depthOf = (row, trail = new Set()) => {
+    if (!row.parentId) return 0;
+    if (trail.has(row.id)) return 0;
+    const parent = byId.get(row.parentId);
+    return parent ? 1 + depthOf(parent, new Set([...trail, row.id])) : 1;
+  };
+  return rows.map((row, order) => {
+    const node = row.node;
     const timeLink = timeLinkFor(node);
     const time = parseTimeLabel(
       (timeLink && (timeLink.getAttribute("aria-label") || ownText(timeLink))) || ""
@@ -248,11 +260,11 @@ function commentsFromArticle(postEl, postId, groupId) {
     const author = findAuthor(node);
     const base = timeLink ? timeLink.getAttribute("href") : "https://www.facebook.com/";
     return {
-      id: ids.get(node),
+      id: row.id,
       postId,
       groupId,
-      parentId,
-      depth,
+      parentId: row.parentId,
+      depth: depthOf(row),
       order,
       authorName: author.name,
       authorUrl: author.url ? absUrl(author.url, base) : "",
@@ -294,12 +306,23 @@ function timeFromArticle(article, postId) {
 function findPostLink(article, groupId) {
   const links = [...article.querySelectorAll("a[href]")].filter((link) => link.closest('[role="article"]') === article);
   const ranked = links.filter((link) => {
-    const id = postIdFromUrl(link.getAttribute("href"));
-    if (!id) return false;
+    if (!isPostPermalink(link.getAttribute("href"))) return false;
     const group = groupFromUrl(link.getAttribute("href"));
     return !group || group.id === groupId;
   });
   return ranked[0] || null;
+}
+
+function isPostPermalink(href, postId) {
+  let url;
+  try {
+    url = new URL(String(href), "https://www.facebook.com");
+  } catch {
+    return false;
+  }
+  if (url.searchParams.has("comment_id") || url.searchParams.has("reply_comment_id")) return false;
+  const id = postIdFromUrl(url.href);
+  return Boolean(id && (postId === undefined || id === postId));
 }
 
 function findShare(article, postId) {
@@ -332,24 +355,39 @@ function isProfileHref(href) {
   return /facebook\.com\/|\/user\/|profile\.php/i.test(href);
 }
 
-function explicitCommentId(article) {
+function commentMeta(article, postId) {
+  let fallback = null;
   for (const link of article.querySelectorAll("a[href]")) {
     if (link.closest('[role="article"]') !== article) continue;
-    const href = link.getAttribute("href") || "";
-    const match = href.match(/[?&]comment_id=([^&#]+)/);
-    if (match) return decodeURIComponent(match[1]);
+    let url;
+    try {
+      url = new URL(link.getAttribute("href") || "", "https://www.facebook.com");
+    } catch {
+      continue;
+    }
+    if (postIdFromUrl(url.href) !== postId) continue;
+    const commentId = url.searchParams.get("comment_id");
+    const replyId = url.searchParams.get("reply_comment_id");
+    if (replyId) return { id: replyId, parentId: commentId || null };
+    if (commentId && !fallback) fallback = { id: commentId, parentId: undefined };
   }
-  return null;
+  return fallback;
 }
 
 function timeLinkFor(article) {
   const links = [...article.querySelectorAll("a[href]")].filter((link) => link.closest('[role="article"]') === article);
-  return links.find((link) => /comment_id=/.test(link.getAttribute("href") || "")) || links.find((link) => link.getAttribute("aria-label")) || null;
+  return links.find((link) => /reply_comment_id=/.test(link.getAttribute("href") || ""))
+    || links.find((link) => /comment_id=/.test(link.getAttribute("href") || ""))
+    || links.find((link) => link.getAttribute("aria-label")) || null;
 }
 
 function textOf(root) {
   const blocks = [...root.querySelectorAll('[dir="auto"]')].filter((el) => el.closest('[role="article"]') === root);
-  const leaves = blocks.filter((el) => !blocks.some((other) => other !== el && el.contains(other)));
+  const leaves = blocks.filter((el) => {
+    const link = el.closest("a[href]");
+    if (link && isProfileHref(link.getAttribute("href"))) return false;
+    return !blocks.some((other) => other !== el && el.contains(other));
+  });
   const parts = [];
   for (const el of leaves) {
     const text = (el.textContent || "").replace(/\s+/g, " ").trim();
@@ -365,6 +403,10 @@ function findCount(root, word) {
     const label = node.getAttribute("aria-label") || "";
     const match = label.match(re);
     if (match) return Number(match[1].replace(/,/g, ""));
+    if (word === "comment") {
+      const localized = label.match(/(\d[\d,]*)\s*(?:則|条|個|个)?\s*(?:留言|評論|评论)/);
+      if (localized) return Number(localized[1].replace(/,/g, ""));
+    }
   }
   return null;
 }
@@ -439,6 +481,8 @@ const FBParse = {
   isOlderThan,
   isNewerThan,
   isExpandLabel,
+  isAllCommentsLabel,
+  isCommentSortLabel,
   isInterstitial,
   topArticles,
   articleForPost,

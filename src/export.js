@@ -7,7 +7,7 @@ const STOP = new Set(
 export function postsCsv(posts) {
   const header = [
     "id", "groupId", "url", "authorName", "authorUrl", "createdAt", "createdLabel", "approximate",
-    "text", "reactionCount", "commentCount", "links", "sharedText", "imageAlts",
+    "text", "reactionCount", "commentCount", "links", "sharedText", "imageAlts", "threadCaptureVersion",
   ];
   return toCsv(header, posts.map((post) => header.map((key) => post[key])));
 }

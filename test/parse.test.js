@@ -8,9 +8,9 @@ const { loadHtml } = require("./mini-dom.js");
 
 const html = fs.readFileSync(path.join(__dirname, "../fixtures/thread.html"), "utf8");
 const doc = loadHtml(html);
-const article = doc.querySelector('[role="article"]');
+const article = parse.articleForPost(doc, "555");
 const post = parse.postFromArticle(article, "123", "https://www.facebook.com/groups/123");
-const comments = parse.commentsFromArticle(article, "555", "123");
+const comments = parse.commentsFromArticle(doc, "555", "123");
 
 assert.equal(parse.groupFromUrl("https://www.facebook.com/groups/123").id, "123");
 assert.equal(parse.groupFromUrl("https://www.facebook.com/groups/feed"), null);
@@ -39,6 +39,17 @@ assert.equal(parse.isNewerThan({ createdAt: null, approximate: true }, "2026-11-
 assert.equal(parse.isExpandLabel("See more"), true);
 assert.equal(parse.isExpandLabel("View 5 more comments"), true);
 assert.equal(parse.isExpandLabel("View 2 replies"), true);
+assert.equal(parse.isExpandLabel("View 1 reply"), true);
+assert.equal(parse.isExpandLabel("View previous replies"), true);
+assert.equal(parse.isExpandLabel("查看更多留言"), true);
+assert.equal(parse.isExpandLabel("查看先前的回覆"), true);
+assert.equal(parse.isExpandLabel("查看更多评论"), true);
+assert.equal(parse.isExpandLabel("查看 2 条回复"), true);
+assert.equal(parse.isAllCommentsLabel("所有留言"), true);
+assert.equal(parse.isAllCommentsLabel("所有评论"), true);
+assert.equal(parse.isExpandLabel("All comments"), false);
+assert.equal(parse.isCommentSortLabel("最相關"), true);
+assert.equal(parse.isCommentSortLabel("最相关"), true);
 assert.equal(parse.isExpandLabel("Write a comment"), false);
 
 assert.ok(post);
@@ -54,6 +65,8 @@ assert.deepEqual(post.imageAlts, ["skillet on a stove"]);
 assert.equal(post.createdAt, "2026-11-01T00:00:00.000Z");
 assert.equal(post.approximate, false);
 assert.ok(post.url.includes("/groups/123/posts/555"));
+assert.equal(parse.articleForPost(doc, "555"), article);
+assert.equal(parse.postFromArticle(doc.querySelector('[role="article"]'), "123", doc.URL), null);
 
 const hiddenYear = loadHtml(`
 <div role="article">
@@ -65,6 +78,14 @@ const oldPost = parse.postFromArticle(hiddenYear.querySelector('[role="article"]
 assert.equal(oldPost.createdAt, "2025-11-23T00:00:00.000Z");
 assert.equal(oldPost.approximate, false);
 assert.equal(parse.isOlderThan(oldPost, "2026-01-01"), true);
+
+const chineseCount = loadHtml(`
+<div role="article">
+  <a href="/groups/123/posts/889">date</a>
+  <div dir="auto">正文</div>
+  <span aria-label="3 則留言">3</span>
+</div>`);
+assert.equal(parse.postFromArticle(chineseCount.querySelector('[role="article"]'), "123", doc.URL).commentCount, 3);
 
 assert.equal(comments.length, 2);
 assert.equal(comments[0].id, "901");
@@ -81,6 +102,11 @@ assert.equal(comments[1].parentId, "901");
 assert.equal(comments[1].depth, 1);
 assert.equal(comments[1].order, 1);
 assert.equal(comments[1].createdAt, "2026-11-02T00:00:00.000Z");
+
+const duplicates = loadHtml(`
+<div role="article"><a href="/groups/123/posts/555?comment_id=901">first</a><div dir="auto">First</div></div>
+<div role="article"><a href="/groups/123/posts/555?comment_id=901">duplicate</a><div dir="auto">Duplicate</div></div>`);
+assert.deepEqual(parse.commentsFromArticle(duplicates, "555", "123").map((row) => row.text), ["First"]);
 
 const blocked = loadHtml('<div role="dialog"><p>Help us confirm it\'s you</p></div>');
 blocked.title = "Facebook";

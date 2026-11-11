@@ -113,14 +113,20 @@ async function runJob(initial) {
       const saved = await readThread(job, next);
       if (saved === "paused") return;
       if (saved === "miss") continue;
+      if (saved.skip) {
+        const res = await send({ type: "THREAD_SKIP", groupId: job.groupId, postId: next.id });
+        threadMisses = 0;
+        if (res?.nextUrl) await goto(res.nextUrl);
+        else return;
+        continue;
+      }
       const res = await send({
         type: "THREAD_DONE",
         groupId: job.groupId,
         postId: next.id,
         post: saved.post,
         comments: saved.comments,
-        older: saved.older === true,
-        newer: saved.newer === true,
+        complete: true,
       });
       threadMisses = 0;
       if (res?.nextUrl) await goto(res.nextUrl);
@@ -190,7 +196,7 @@ async function readThread(job, next) {
       await send({
         type: "JOB_ERROR",
         groupId: job.groupId,
-        error: "Could not read that post. Facebook may have changed the page, or the post did not load.",
+        error: `Could not read post ${next.id}. Facebook may have changed the page, or the post did not load. The saved thread was not changed.`,
       });
       return "paused";
     }
@@ -198,16 +204,34 @@ async function readThread(job, next) {
     return "miss";
   }
   let post = FB.postFromArticle(article, job.groupId, location.href);
-  if (post && FB.isNewerThan(post, job.until)) return { newer: true };
-  if (post && FB.isOlderThan(post, job.since)) return { older: true };
-  await expandThread();
+  if (!post || post.id !== next.id) {
+    return failThread(job, next, `Could not identify post ${next.id}. The saved thread was not changed.`);
+  }
+  threadMisses = 0;
+  if (FB.isNewerThan(post, job.until) || FB.isOlderThan(post, job.since)) return { skip: true };
+  const expanded = await expandThread(next.id);
   if (pauseRequested) return "paused";
-  article = FB.articleForPost(document, next.id) || article;
-  post = FB.postFromArticle(article, job.groupId, location.href) || post;
-  if (post && FB.isNewerThan(post, job.until)) return { newer: true };
-  if (post && FB.isOlderThan(post, job.since)) return { older: true };
-  const comments = FB.commentsFromArticle(article, next.id, job.groupId);
+  if (!expanded.complete) return failThread(job, next, expanded.error);
+  article = FB.articleForPost(document, next.id);
+  post = FB.postFromArticle(article, job.groupId, location.href);
+  if (!post || post.id !== next.id) {
+    return failThread(job, next, `Could not identify post ${next.id} after expanding comments. The saved thread was not changed.`);
+  }
+  if (FB.isNewerThan(post, job.until) || FB.isOlderThan(post, job.since)) return { skip: true };
+  const comments = FB.commentsFromArticle(document, next.id, job.groupId);
+  if ((post.commentCount || 0) > 0 && comments.length === 0) {
+    return failThread(job, next, `Post ${next.id} reports comments, but none could be read. The saved thread was not changed.`);
+  }
   return { post, comments };
+}
+
+async function failThread(job, next, error) {
+  await send({
+    type: "JOB_ERROR",
+    groupId: job.groupId,
+    error: error || `Could not finish reading post ${next.id}. The saved thread was not changed.`,
+  });
+  return "paused";
 }
 
 function clickSeeMores(root) {
@@ -220,19 +244,53 @@ function clickSeeMores(root) {
 }
 
 // ponytail: stops after 40 expansions per thread so a button that never disappears cannot spin.
-async function expandThread() {
+async function expandThread(postId, root = document, wait = pace) {
+  const sorted = await selectAllComments(root, wait);
+  if (!sorted.complete) return sorted;
   let clicks = 0;
+  let stalls = 0;
+  let signature = commentSignature(root, postId);
   while (clicks < 40) {
-    if (pauseRequested) return;
-    const buttons = findExpandButtons(document).filter((button) => !clicked.has(button));
-    if (!buttons.length) return;
+    if (pauseRequested) return { complete: false, error: "Comment expansion was paused." };
+    const buttons = findExpandButtons(root);
+    if (!buttons.length) return { complete: true };
     const button = buttons[0];
-    clicked.add(button);
     button.click();
     clicks += 1;
-    const kept = await pace();
-    if (!kept) return;
+    const kept = await wait();
+    if (!kept) return { complete: false, error: "Comment expansion was paused." };
+    const nextSignature = commentSignature(root, postId);
+    if (nextSignature !== signature) {
+      signature = nextSignature;
+      stalls = 0;
+    } else if (findExpandButtons(root).includes(button)) {
+      stalls += 1;
+      if (stalls >= 2) {
+        return { complete: false, error: `Comments for post ${postId} stopped expanding. Resume to try again; the saved thread was not changed.` };
+      }
+    } else {
+      stalls = 0;
+    }
   }
+  return { complete: false, error: `Post ${postId} reached the 40-click comment expansion limit. The saved thread was not changed.` };
+}
+
+async function selectAllComments(root, wait) {
+  const controls = [...root.querySelectorAll('[role="button"]')];
+  const selector = controls.find((el) => FB.isCommentSortLabel(labelOf(el)));
+  if (!selector) return { complete: true };
+  selector.click();
+  if (!(await wait())) return { complete: false, error: "Comment expansion was paused." };
+  const options = [...root.querySelectorAll('[role="button"], [role="menuitem"], [role="menuitemradio"]')];
+  const all = options.find((el) => FB.isAllCommentsLabel(labelOf(el)));
+  if (!all) return { complete: false, error: "Could not switch the thread to All comments. The saved thread was not changed." };
+  all.click();
+  if (!(await wait())) return { complete: false, error: "Comment expansion was paused." };
+  return { complete: true };
+}
+
+function commentSignature(root, postId) {
+  return FB.commentsFromArticle(root, postId, "").map((comment) => comment.id).join(",");
 }
 
 function findExpandButtons(root) {
@@ -299,6 +357,9 @@ function send(msg) {
   return chrome.runtime.sendMessage(msg).catch((err) => ({ ok: false, error: String(err) }));
 }
 
-bind();
-hello();
+if (typeof module !== "undefined" && module.exports) module.exports = { expandThread };
+else {
+  bind();
+  hello();
+}
 })();
