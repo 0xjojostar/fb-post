@@ -25,8 +25,10 @@ const absolute = parse.parseTimeLabel("November 1, 2026");
 assert.equal(absolute.approximate, false);
 assert.equal(absolute.createdAt, "2026-11-01T00:00:00.000Z");
 assert.equal(parse.parseTimeLabel("November 1, 2026 at 8:05 PM").createdAt, "2026-11-01T20:05:00.000Z");
+assert.equal(parse.parseTimeLabel("October 23 at 8:05 PM", "2026-11-18").createdAt, "2026-10-23T20:05:00.000Z");
 assert.equal(parse.parseTimeLabel("2h").approximate, true);
 assert.equal(parse.parseTimeLabel("2h").createdAt, null);
+assert.equal(parse.parseTimeLabel("a day ago").label, "a day ago");
 assert.equal(parse.parseTimeLabel("Yesterday at 3:14 PM").approximate, true);
 assert.equal(parse.isOlderThan({ createdAt: "2026-11-01T00:00:00.000Z", approximate: false }, "2026-12-01"), true);
 assert.equal(parse.isOlderThan({ createdAt: "2026-11-01T00:00:00.000Z", approximate: false }, "2026-01-01"), false);
@@ -67,6 +69,59 @@ assert.equal(post.approximate, false);
 assert.ok(post.url.includes("/groups/123/posts/555"));
 assert.equal(parse.articleForPost(doc, "555"), article);
 assert.equal(parse.postFromArticle(doc.querySelector('[role="article"]'), "123", doc.URL), null);
+
+const rolelessFeed = loadHtml(`
+<div role="feed">
+  <div>
+    <section>
+      <a href="/groups/123/user/99">Ada Lovelace</a>
+      <a href="/groups/123/posts/890"><span aria-labelledby="date"><svg><use></use></svg></span></a>
+      <div dir="auto">A recent post without an article role.</div>
+    </section>
+    <div role="article">
+      <a href="/groups/123/posts/891" aria-label="September 17, 2026">September 17</a>
+    </div>
+  </div>
+</div>`);
+const rolelessArticle = parse.topArticles(rolelessFeed)[0];
+const rolelessPost = parse.postFromArticle(rolelessArticle, "123", rolelessFeed.URL);
+assert.deepEqual(parse.topArticles(rolelessFeed).map((item) => parse.postFromArticle(item, "123", rolelessFeed.URL).id), ["890", "891"]);
+assert.equal(rolelessPost.id, "890");
+assert.equal(rolelessPost.text, "A recent post without an article role.");
+assert.equal(rolelessPost.approximate, true);
+
+const labelledDate = loadHtml(`
+<div role="article">
+  <a href="/groups/123/posts/892"><span aria-labelledby="post-date"><svg><use></use></svg></span></a>
+  <span id="post-date">October 23 at 8:05 PM</span>
+</div>`);
+assert.equal(parse.postFromArticle(labelledDate.querySelector('[role="article"]'), "123", labelledDate.URL).createdAt, "2026-10-23T20:05:00.000Z");
+
+const feedCards = loadHtml(`
+<div role="feed">
+  <span id="recent-date">a day ago</span>
+  <span id="dated-post">November 11 at 7:13 AM</span>
+  <div data-virtualized="false">
+    <a href="/groups/123/user/99">Ada Lovelace</a>
+    <a href="?token=hidden"><span aria-labelledby="recent-date"></span></a>
+    <div data-ad-rendering-role="story_message">A permalink-free post.</div>
+  </div>
+  <div data-virtualized="false">
+    <a href="/groups/123/posts/893?comment_id=901">comment</a>
+    <a href="?token=hidden"><span aria-labelledby="dated-post"></span></a>
+    <div data-ad-rendering-role="story_message">A post identified through its comment link.</div>
+  </div>
+</div>`);
+const parsedFeedCards = parse.topArticles(feedCards).map((card) => parse.postFromArticle(card, "123", feedCards.URL));
+assert.equal(parsedFeedCards.length, 2);
+assert.match(parsedFeedCards[0].id, /^feed-/);
+assert.equal(parsedFeedCards[0].text, "A permalink-free post.");
+assert.equal(parsedFeedCards[1].id, "893");
+assert.equal(parsedFeedCards[1].url, "https://www.facebook.com/groups/123/posts/893");
+assert.equal(parsedFeedCards[1].createdAt, "2026-11-11T07:13:00.000Z");
+
+const undatedCard = loadHtml('<div data-virtualized="false"><div data-ad-rendering-role="story_message">Still loading.</div><a aria-label="Author"></a></div>');
+assert.equal(parse.postFromArticle(undatedCard.querySelector('[data-virtualized]'), "123", undatedCard.URL).createdLabel, "");
 
 const hiddenYear = loadHtml(`
 <div role="article">

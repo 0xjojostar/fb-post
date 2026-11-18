@@ -84,31 +84,33 @@ function groupNameFromTitle(title) {
   return cleaned;
 }
 
-function parseTimeLabel(raw) {
+function parseTimeLabel(raw, today) {
   const label = String(raw || "").replace(/\s+/g, " ").trim();
   if (!label) return { createdAt: null, approximate: true, label: "" };
-  if (/^(just now|today|yesterday)\b/i.test(label)) {
+  if (isRelativeTimeLabel(label)) {
     return { createdAt: null, approximate: true, label };
   }
-  if (/^\d+\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b/i.test(label)) {
-    return { createdAt: null, approximate: true, label };
-  }
-  const absolute = absoluteDate(label);
+  const absolute = absoluteDate(label, (today || localToday()).slice(0, 4));
   if (absolute) return { createdAt: absolute, approximate: false, label };
   return { createdAt: null, approximate: true, label };
 }
 
-function absoluteDate(label) {
-  if (!/\d{4}/.test(label)) return null;
+function isRelativeTimeLabel(label) {
+  return /^(just now|today|yesterday|an? (?:second|minute|hour|day) ago)\b/i.test(label)
+    || /^\d+\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)\b/i.test(label);
+}
+
+function absoluteDate(label, currentYear) {
   const clockTime = clockSuffix(label);
-  const monthFirst = label.match(/\b([A-Za-z]+)\s+(\d{1,2}),\s*(\d{4})\b/);
+  const monthFirst = label.match(/\b([A-Za-z]+)\s+(\d{1,2})(?:,\s*(\d{4}))?\b/);
   if (monthFirst && MONTHS[monthFirst[1].toLowerCase()]) {
-    return stamp(monthFirst[3], MONTHS[monthFirst[1].toLowerCase()], monthFirst[2], clockTime);
+    return stamp(monthFirst[3] || currentYear, MONTHS[monthFirst[1].toLowerCase()], monthFirst[2], clockTime);
   }
-  const dayFirst = label.match(/\b(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\b/);
+  const dayFirst = label.match(/\b(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?\b/);
   if (dayFirst && MONTHS[dayFirst[2].toLowerCase()]) {
-    return stamp(dayFirst[3], MONTHS[dayFirst[2].toLowerCase()], dayFirst[1], clockTime);
+    return stamp(dayFirst[3] || currentYear, MONTHS[dayFirst[2].toLowerCase()], dayFirst[1], clockTime);
   }
+  if (!/\d{4}/.test(label)) return null;
   const numeric = label.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
   if (numeric) return stamp(numeric[1], numeric[2], numeric[3], clockTime);
   const parsed = Date.parse(label);
@@ -183,16 +185,40 @@ function isInterstitial(doc) {
 }
 
 function topArticles(root) {
-  return [...root.querySelectorAll('[role="article"]')].filter((el) => {
-    const parent = el.parentElement && el.parentElement.closest('[role="article"]');
-    return !parent;
-  });
+  const cards = [...root.querySelectorAll('[data-ad-rendering-role="story_message"]')]
+    .map((message) => message.closest("[data-virtualized]"))
+    .filter((card, index, rows) => card && rows.indexOf(card) === index);
+  if (cards.length) return cards;
+  const articles = [];
+  const links = [...root.querySelectorAll("a[href]")].filter((link) => isPostPermalink(link.getAttribute("href")));
+  for (const link of links) {
+    let article = link.closest('[role="article"]');
+    if (article) {
+      let parent = article.parentElement && article.parentElement.closest('[role="article"]');
+      while (parent) {
+        article = parent;
+        parent = article.parentElement && article.parentElement.closest('[role="article"]');
+      }
+    } else {
+      const id = postIdFromUrl(link.getAttribute("href"));
+      article = link;
+      while (article.parentElement) {
+        const ids = [...article.parentElement.querySelectorAll("a[href]")]
+          .filter((item) => isPostPermalink(item.getAttribute("href")))
+          .map((item) => postIdFromUrl(item.getAttribute("href")));
+        if (ids.some((other) => other !== id)) break;
+        article = article.parentElement;
+      }
+    }
+    if (!articles.includes(article)) articles.push(article);
+  }
+  return articles;
 }
 
 function articleForPost(root, postId) {
-  const matches = [...root.querySelectorAll('[role="article"]')].filter((article) => {
+  const matches = topArticles(root).filter((article) => {
     return [...article.querySelectorAll("a[href]")].some((link) => {
-      if (link.closest('[role="article"]') !== article) return false;
+      if (!belongsTo(article, link)) return false;
       return isPostPermalink(link.getAttribute("href"), postId);
     });
   });
@@ -202,17 +228,17 @@ function articleForPost(root, postId) {
 function postFromArticle(article, groupId, pageUrl) {
   if (!article) return null;
   const link = findPostLink(article, groupId);
-  if (!link) return null;
-  const id = postIdFromUrl(link.getAttribute("href"));
-  if (!id) return null;
+  const message = article.querySelector('[data-ad-rendering-role="story_message"]');
+  if (!link && !message) return null;
+  const id = link ? postIdFromUrl(link.getAttribute("href")) : feedPostId(article, groupId);
   const time = timeFromArticle(article, id);
   const author = findAuthor(article);
   const share = findShare(article, id);
-  const base = pageUrl || link.getAttribute("href");
+  const base = pageUrl || (link && link.getAttribute("href"));
   return {
     id,
     groupId,
-    url: cleanPostUrl(link.getAttribute("href"), base),
+    url: link ? cleanPostUrl(link.getAttribute("href"), base) : "",
     authorName: author.name,
     authorUrl: author.url ? absUrl(author.url, base) : "",
     createdAt: time.createdAt,
@@ -284,13 +310,17 @@ function timeFromArticle(article, postId) {
     if (label && label.length <= 120 && !labels.includes(label)) labels.push(label);
   };
   for (const link of article.querySelectorAll("a[href]")) {
-    if (link.closest('[role="article"]') !== article) continue;
+    if (!belongsTo(article, link)) continue;
     if (postIdFromUrl(link.getAttribute("href")) !== postId) continue;
     push(link.getAttribute("aria-label"));
+    push(labelledByText(link, article));
     push(link.textContent);
   }
+  for (const node of article.querySelectorAll("[aria-labelledby]")) {
+    if (belongsTo(article, node)) push(labelledByText(node, article));
+  }
   for (const node of article.querySelectorAll("[aria-label], abbr, time")) {
-    if (node.closest('[role="article"]') !== article) continue;
+    if (!belongsTo(article, node)) continue;
     push(node.getAttribute("aria-label"));
     if (node.tagName === "ABBR" || node.tagName === "TIME" || node.tag === "abbr" || node.tag === "time") push(node.textContent);
   }
@@ -298,19 +328,26 @@ function timeFromArticle(article, postId) {
   for (const label of labels) {
     const time = parseTimeLabel(label);
     if (time.createdAt && !time.approximate) return time;
-    if (!fallback && time.label) fallback = time;
+    if (!fallback && isRelativeTimeLabel(label)) fallback = time;
   }
   return fallback || { createdAt: null, approximate: true, label: "" };
 }
 
 function findPostLink(article, groupId) {
-  const links = [...article.querySelectorAll("a[href]")].filter((link) => link.closest('[role="article"]') === article);
+  const links = [...article.querySelectorAll("a[href]")].filter((link) => belongsTo(article, link));
   const ranked = links.filter((link) => {
-    if (!isPostPermalink(link.getAttribute("href"))) return false;
+    const href = link.getAttribute("href");
+    if (!postIdFromUrl(href) || !/\/groups\/[^/]+\/(?:posts|permalink)\//.test(href || "")) return false;
     const group = groupFromUrl(link.getAttribute("href"));
     return !group || group.id === groupId;
   });
-  return ranked[0] || null;
+  const permalink = ranked.find((link) => isPostPermalink(link.getAttribute("href")));
+  if (permalink) return permalink;
+  if (!article.querySelector('[data-ad-rendering-role="story_message"]')) return null;
+  return [...article.querySelectorAll("a[href]")].find((link) => {
+    const href = link.getAttribute("href");
+    return /\/groups\/[^/]+\/(?:posts|permalink)\//.test(href || "") && groupFromUrl(href)?.id === groupId;
+  }) || null;
 }
 
 function isPostPermalink(href, postId) {
@@ -321,6 +358,7 @@ function isPostPermalink(href, postId) {
     return false;
   }
   if (url.searchParams.has("comment_id") || url.searchParams.has("reply_comment_id")) return false;
+  if (!/\/groups\/[^/]+\/(?:posts|permalink)\//.test(url.pathname) && !url.searchParams.has("story_fbid")) return false;
   const id = postIdFromUrl(url.href);
   return Boolean(id && (postId === undefined || id === postId));
 }
@@ -338,7 +376,7 @@ function isShare(article, postId) {
 }
 
 function findAuthor(root) {
-  const links = [...root.querySelectorAll("a[href]")].filter((link) => link.closest('[role="article"]') === root);
+  const links = [...root.querySelectorAll("a[href]")].filter((link) => belongsTo(root, link));
   for (const link of links) {
     if (!isProfileHref(link.getAttribute("href"))) continue;
     const name = (ownText(link) || link.textContent || "").replace(/\s+/g, " ").trim();
@@ -382,7 +420,10 @@ function timeLinkFor(article) {
 }
 
 function textOf(root) {
-  const blocks = [...root.querySelectorAll('[dir="auto"]')].filter((el) => el.closest('[role="article"]') === root);
+  const messages = [...root.querySelectorAll('[data-ad-rendering-role="story_message"]')]
+    .filter((message) => message.closest("[data-virtualized]") === root);
+  if (messages.length) return messages.map((message) => message.textContent.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
+  const blocks = [...root.querySelectorAll('[dir="auto"]')].filter((el) => belongsTo(root, el));
   const leaves = blocks.filter((el) => {
     const link = el.closest("a[href]");
     if (link && isProfileHref(link.getAttribute("href"))) return false;
@@ -399,7 +440,7 @@ function textOf(root) {
 function findCount(root, word) {
   const re = new RegExp("(\\d[\\d,]*)\\s+" + word + "s?", "i");
   for (const node of root.querySelectorAll("[aria-label]")) {
-    if (node.closest('[role="article"]') !== root) continue;
+    if (!belongsTo(root, node)) continue;
     const label = node.getAttribute("aria-label") || "";
     const match = label.match(re);
     if (match) return Number(match[1].replace(/,/g, ""));
@@ -414,7 +455,7 @@ function findCount(root, word) {
 function outboundLinks(root, base) {
   const links = [];
   for (const link of root.querySelectorAll("a[href]")) {
-    if (link.closest('[role="article"]') !== root) continue;
+    if (!belongsTo(root, link)) continue;
     const href = link.getAttribute("href") || "";
     if (!/^https?:/i.test(href) && !href.startsWith("/")) continue;
     if (isProfileHref(href) || postIdFromUrl(href) || /comment_id=/.test(href)) continue;
@@ -438,12 +479,38 @@ function outboundLinks(root, base) {
 function imageAlts(root) {
   const alts = [];
   for (const img of root.querySelectorAll("img[alt]")) {
-    if (img.closest('[role="article"]') !== root) continue;
+    if (!belongsTo(root, img)) continue;
     const alt = (img.getAttribute("alt") || "").replace(/\s+/g, " ").trim();
     if (!alt || /^facebook$/i.test(alt) || alts.includes(alt)) continue;
     alts.push(alt);
   }
   return alts;
+}
+
+function belongsTo(root, node) {
+  const article = node.closest('[role="article"]');
+  return article ? article === root : root.contains(node);
+}
+
+function labelledByText(node, root) {
+  if (!node) return "";
+  const ids = (node.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+  if (!ids.length) return "";
+  const local = [...root.querySelectorAll("[id]")];
+  return ids.map((id) => {
+    const target = node.ownerDocument?.getElementById(id) || local.find((item) => item.getAttribute("id") === id);
+    return target ? (target.getAttribute("aria-label") || target.textContent || "") : "";
+  }).join(" ");
+}
+
+function feedPostId(article, groupId) {
+  const message = article.querySelector('[data-ad-rendering-role="story_message"]');
+  const author = findAuthor(article);
+  // shortcut: identical permalink-free text by the same author shares an id, use Facebook's id if it returns to the DOM.
+  const seed = `${groupId}\n${author.url}\n${message ? message.textContent : ""}`;
+  let hash = 2166136261;
+  for (let i = 0; i < seed.length; i += 1) hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619);
+  return `feed-${(hash >>> 0).toString(36)}`;
 }
 
 function ownText(el) {

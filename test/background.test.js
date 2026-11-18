@@ -41,6 +41,12 @@ const path = require("path");
   assert.equal(posts.get("555").text, "Correct post", "feed reread does not overwrite an archived post");
   assert.equal(postWrites, 0);
 
+  await mod.savePost("123", { id: "556", url: "", text: "Feed post" });
+  assert.equal(posts.get("556").text, "Feed post");
+  assert.equal(posts.get("556").threadCaptureVersion, 1);
+  assert.equal(job.pending.length, 0);
+  const feedWrites = postWrites;
+
   const resetJob = () => {
     Object.assign(job, { phase: "threads", status: "running", paused: false, error: "", pending: [{ id: "555", url: "post" }] });
   };
@@ -52,7 +58,7 @@ const path = require("path");
 
   resetJob();
   await mod.threadDone({ groupId: "123", postId: "555", complete: true, post: { id: "999", text: "Wrong post" }, comments: [] });
-  assert.equal(postWrites, 0);
+  assert.equal(postWrites, feedWrites);
   assert.equal(commentWrites, 0);
 
   resetJob();

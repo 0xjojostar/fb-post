@@ -201,8 +201,11 @@ async function savePost(groupId, post) {
   if (job.mode === "update" && (job.knownIds || []).includes(post.id)) {
     return { ok: true, stopFeed: true };
   }
+  const existing = await getPost(post.id);
+  if (!existing || existing.threadCaptureVersion !== 2) {
+    await putPost({ ...mergePost(existing, post), groupId, threadCaptureVersion: existing?.threadCaptureVersion || 1 });
+  }
   if (!job.seenIds.includes(post.id)) job.seenIds.push(post.id);
-  if (!job.pending.some((item) => item.id === post.id)) job.pending.push({ id: post.id, url: post.url });
   job.updatedAt = new Date().toISOString();
   await putJob(job);
   return { ok: true, stopFeed: false };
@@ -212,12 +215,13 @@ async function feedDone(groupId) {
   const job = await getJob(groupId);
   if (!job) return { ok: false, error: "No download is running." };
   if (job.paused) return { ok: true, nextUrl: null };
-  job.phase = job.pending.length ? "threads" : "done";
-  job.status = job.pending.length ? "running" : "done";
+  job.pending = [];
+  job.phase = "done";
+  job.status = "done";
   job.updatedAt = new Date().toISOString();
   await putJob(job);
   await updateGroupStatus(groupId, job.status);
-  return { ok: true, nextUrl: job.pending[0]?.url || null };
+  return { ok: true, nextUrl: null };
 }
 
 async function threadDone(msg) {

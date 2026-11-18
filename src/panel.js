@@ -6,7 +6,6 @@ const progressEl = document.querySelector("#progress");
 const groupsEl = document.querySelector("#groups");
 const detailEl = document.querySelector("#detail");
 const titleEl = document.querySelector("#detail-title");
-const warningEl = document.querySelector("#verification-warning");
 const searchEl = document.querySelector("#search");
 const insightsEl = document.querySelector("#insights");
 const resultsEl = document.querySelector("#results");
@@ -61,9 +60,9 @@ async function refresh() {
   const jobs = [];
   for (const item of groups) {
     const posts = await listPosts(item.id);
-    jobs.push([item.id, await getJob(item.id), posts.length, posts.some((post) => post.threadCaptureVersion !== 2)]);
+    jobs.push([item.id, await getJob(item.id), posts.length]);
   }
-  const sig = JSON.stringify(jobs.map(([id, job, count, unverified]) => [id, job?.status, job?.phase, job?.seenIds?.length, job?.pending?.length, job?.error, count, unverified]));
+  const sig = JSON.stringify(jobs.map(([id, job, count]) => [id, job?.status, job?.phase, job?.seenIds?.length, job?.error, count]));
   paintProgress(group, jobs);
   if (sig === signature) return;
   signature = sig;
@@ -82,8 +81,9 @@ function paintProgress(group, jobs) {
   }
   const saved = job.seenIds?.length || 0;
   const left = job.pending?.length || 0;
-  if (job.status === "paused") progressEl.textContent = `Paused. ${saved} posts saved this run, ${left} threads left.`;
-  else if (job.status === "running" && job.phase === "feed") progressEl.textContent = `Reading the feed. ${saved} posts saved.`;
+  const range = job.since || job.until ? ` (${job.since || "start"} to ${job.until || "today"})` : "";
+  if (job.status === "paused") progressEl.textContent = `Paused. ${saved} posts saved this run.`;
+  else if (job.status === "running" && job.phase === "feed") progressEl.textContent = `Reading the feed${range}. ${saved} posts saved.`;
   else if (job.status === "running" && job.phase === "threads") progressEl.textContent = `Reading comments. ${left} threads left.`;
   else if (job.status === "done") progressEl.textContent = "Download finished.";
 }
@@ -128,7 +128,6 @@ async function renderDetail() {
   }
   detailEl.hidden = false;
   titleEl.textContent = group.name || group.id;
-  warningEl.hidden = !(await listPosts(selectedId)).some((post) => post.threadCaptureVersion !== 2);
   await renderInsights();
   await renderResults();
 }

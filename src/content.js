@@ -66,6 +66,7 @@ function maybeStart(job) {
 }
 
 async function runJob(initial) {
+  if (!(await pace())) return;
   await send({ type: "NAME", groupId: initial.groupId, title: document.title });
   let job = initial;
   while (!pauseRequested) {
@@ -152,12 +153,13 @@ async function feedStep(job) {
       stop = true;
       break;
     }
-    if (seen.has(post.id)) continue;
+    if ((job.since || job.until) && !post.createdLabel) continue;
     if (FB.isNewerThan(post, job.until)) continue;
     if (FB.isOlderThan(post, job.since)) {
       stop = true;
       break;
     }
+    if (seen.has(post.id)) continue;
     const saved = await send({ type: "SAVE_POST", groupId: job.groupId, post });
     if (!saved?.ok) {
       await send({ type: "JOB_ERROR", groupId: job.groupId, error: saved?.error || "Could not save a post." });

@@ -130,13 +130,20 @@ function parseFragment(html) {
 
 function loadHtml(html) {
   const body = parseFragment(html);
-  return {
+  const doc = {
     title: "",
     URL: "https://www.facebook.com/groups/123",
     body,
     querySelectorAll: (sel) => body.querySelectorAll(sel),
     querySelector: (sel) => body.querySelector(sel),
+    getElementById: (id) => body.querySelectorAll("[id]").find((node) => node.getAttribute("id") === id) || null,
   };
+  const attach = (node) => {
+    node.ownerDocument = doc;
+    for (const child of node.childNodes) attach(child);
+  };
+  attach(body);
+  return doc;
 }
 
 module.exports = { loadHtml };
